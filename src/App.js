@@ -1,4 +1,3 @@
-import logo from "./logo.svg";
 import "./App.css";
 import { ethers } from "ethers";
 import { useEffect, useState } from "react";
@@ -6,6 +5,13 @@ import LitJsSdk from "lit-js-sdk";
 import axios from "axios";
 import abi from "./contracts/abi.js";
 import addresses from "./contracts/addresses.js";
+import SwitchView from "./components/SwitchView";
+import SealSecret from "./components/SealSecret";
+import WalletNavbar from "./components/WalletNavbar";
+import ViewSecrets from "./components/ViewSecrets";
+import "bootstrap/dist/css/bootstrap.min.css";
+import { Card } from "react-bootstrap";
+import ConnectButton from "./components/ConnectWallet";
 
 const network = process.env.REACT_APP_NETWORK;
 
@@ -42,10 +48,10 @@ const pinJson = async (JSONBody) => {
 const pinFile = async (file, sender, receiver) => {
   const url = `https://api.pinata.cloud/pinning/pinFileToIPFS`;
   let data = new FormData();
-  data.append( 'file', file, {
-    filename:    'encryptedString.bin',
-    contentType: 'application/octet-stream',
-} );
+  data.append("file", file, {
+    filename: "encryptedString.bin",
+    contentType: "application/octet-stream",
+  });
   const metadata = JSON.stringify({
     name: `${sender}_${receiver}_encryptedString`,
   });
@@ -53,7 +59,7 @@ const pinFile = async (file, sender, receiver) => {
   return axios.post(url, data, {
     maxBodyLength: "Infinity", //this is needed to prevent axios from erroring out with large files
     headers: {
-      "Content-Type": 'multipart/form-data',
+      "Content-Type": "multipart/form-data",
       pinata_api_key: process.env.REACT_APP_PINATA_API_Key,
       pinata_secret_api_key: process.env.REACT_APP_PINATA_API_Secret,
     },
@@ -98,20 +104,18 @@ const generateSecret = (
 };
 
 function App() {
-  const [isSendingSecret, setIsSendingSecret] = useState();
+  const [isSendingSecret, setIsSendingSecret] = useState(true);
   const [provider, setProvider] = useState();
   const [isValidNetwork, setIsValidNetwork] = useState();
   const [signer, setSigner] = useState();
   const [account, setAccount] = useState();
   const [isConnected, setIsConnected] = useState();
   const [litClient, setLitClient] = useState();
+  const [litConnected, setLitConnected] = useState(false);
   const [authKey, setAuthKey] = useState();
   const [ssoInstance, setSsoInstance] = useState();
   const [receivedSecrets, setReceivedSecrets] = useState();
-
-  const [receiver, setReceiver] = useState();
-  const [message, setMessage] = useState();
-  const [title, setTitle] = useState();
+  const [addedListeners, setAddedListeners] = useState(false);
 
   const [secret, setSecret] = useState();
   const [hash, setHash] = useState();
@@ -127,6 +131,7 @@ function App() {
     setLitClient(client);
     const auth = await LitJsSdk.checkAndSignAuthMessage({ chain: chain });
     setAuthKey(auth);
+    setLitConnected(true);
   };
 
   const connectWallet = async () => {
@@ -147,13 +152,35 @@ function App() {
         );
         const filter = ssoInstance.filters.SecretSealed(null, account);
         const queries = await ssoInstance.queryFilter(filter);
-        const receivedSecrets = queries.map((query) => ({
-          sender: query.args.sender,
-          secretId: query.args.receiverTokenId.toString(),
-        }));
+        const receivedSecrets = await Promise.all(
+          queries.map(async (query) => {
+            const url = await ssoInstance.tokenURI(
+              query.args.receiverTokenId.toString()
+            );
+            const metadata = (
+              await axios.get(`https://ipfs.io/ipfs/${url.slice(6)}`)
+            ).data;
+            return {
+              metadata: metadata,
+              sender: query.args.sender,
+              senderSecretId: query.args.senderTokenId.toString(),
+              receiver: query.args.receiver,
+              secretId: query.args.receiverTokenId.toString(),
+            };
+          })
+        );
+        if (!litConnected) {
+          await connectLit();
+        }
+        if (!addedListeners) {
+          window.ethereum.on("accountsChanged", (accounts) => connectWallet());
+          window.ethereum.on("chainChanged", (chainId) => {
+            connectWallet();
+          });
+          setAddedListeners(true);
+        }
         setReceivedSecrets(receivedSecrets);
         setSsoInstance(ssoInstance);
-        await connectLit();
         setProvider(provider);
         setSigner(signer);
         setAccount(account);
@@ -166,7 +193,7 @@ function App() {
     }
   };
 
-  const sealSecret = async () => {
+  const sealSecret = async (receiver, message, title) => {
     if (isConnected) {
       if (
         account.toLowerCase() != receiver.toLowerCase() &&
@@ -184,7 +211,6 @@ function App() {
         });
         const encryptedStringHash = (await pinFile(encryptedString)).data
           .IpfsHash;
-        console.log(encryptedSymmetricKey);
         const secret = generateSecret(
           account,
           receiver,
@@ -228,42 +254,17 @@ function App() {
     return decryptedString;
   };
 
-  const handleReceiver = (event) => {
-    setReceiver(event.target.value);
-  };
-
-  const handleMessage = (event) => {
-    setMessage(event.target.value);
-  };
-
-  const handleTitle = (event) => {
-    setTitle(event.target.value);
-  };
-
-  const renderSecrets = () => {
-    return receivedSecrets.map((secret) => (
-      <p key={secret.secretId}>
-        Sender:{secret.sender} Secret ID:{secret.secretId}
-      </p>
-    ));
-  };
-
-  const revealSecret = async () => {
-    const secretId = receivedSecrets[0].secretId;
-    const url = await ssoInstance.tokenURI(secretId);
-    const metadata = (await axios.get(`https://ipfs.io/ipfs/${url.slice(6)}`))
-      .data;
+  const revealSecret = async (secret) => {
+    const metadata = secret.metadata;
     const encryptString = await axios({
       url: `https://ipfs.io/ipfs/${metadata.secret.encryptedStringHash}`,
       method: `get`,
-      responseType: `blob`}
-    );
-    alert(
-      await decrypt(
-        metadata.secret.accessControlConditions,
-        Uint8Array.from(Object.values(metadata.secret.encryptedSymmetricKey)),
-        encryptString.data
-      )
+      responseType: `blob`,
+    });
+    return await decrypt(
+      metadata.secret.accessControlConditions,
+      Uint8Array.from(Object.values(metadata.secret.encryptedSymmetricKey)),
+      encryptString.data
     );
   };
 
@@ -273,51 +274,48 @@ function App() {
 
   return (
     <div className="App">
-      <header className="App-header">
-        {!isConnected ? (
-          <button onClick={connectWallet}>Connect Wallet</button>
-        ) : (
-          <>
-            <button onClick={() => setIsSendingSecret(true)}>
-              Send Secret
-            </button>
-            <button onClick={() => setIsSendingSecret(false)}>
-              Read Secret
-            </button>
-            {isSendingSecret ? (
-              <>
-                <input
-                  type={"text"}
-                  placeholder={"A secret to my ..."}
-                  value={title}
-                  name={"title"}
-                  onChange={handleTitle}
-                />
-                <input
-                  type={"text"}
-                  placeholder={"sshhh, it's a secret!!"}
-                  value={message}
-                  name={"message"}
-                  onChange={handleMessage}
-                />
-                <input
-                  type={"text"}
-                  placeholder={"0xdEAf69..."}
-                  value={receiver}
-                  name={"receiver"}
-                  onChange={handleReceiver}
-                />
-                <button onClick={sealSecret}>Seal Secret</button>
-              </>
-            ) : (
-              <>
-                {renderSecrets()}
-                <button onClick={revealSecret}>Reveal Secret</button>
-              </>
-            )}
-          </>
-        )}
-      </header>
+      <WalletNavbar
+        connectWallet={connectWallet}
+        isConnected={isConnected}
+        account={account}
+      />
+      {!isConnected ? (
+        <div className="justify-content-center">
+          <Card style={{ maxWidth: "450px" , marginLeft: "auto",marginRight: "auto", marginTop: "5rem"}}>
+              <Card.Header>
+                <ConnectButton variant={"primary"} connectWallet={connectWallet} />
+              </Card.Header>
+            </Card>
+        </div>
+      ) : (
+        <div className="justify-content-center">
+            <Card style={{ maxWidth: "450px" , marginLeft: "auto",marginRight: "auto", marginTop: "5rem"}}>
+              <Card.Header>
+                <SwitchView setIsSendingSecret={setIsSendingSecret} />
+              </Card.Header>
+              <Card.Body>
+                {isSendingSecret ? (
+                  <>
+                    <Card.Title>Seal Secret</Card.Title>
+                    <Card.Text>
+                      <SealSecret sealSecret={sealSecret} />
+                    </Card.Text>
+                  </>
+                ) : (
+                  <>
+                    <Card.Title>Reveal Secret</Card.Title>
+                    <Card.Text>
+                      <ViewSecrets
+                        revealSecret={revealSecret}
+                        receivedSecrets={receivedSecrets}
+                      />
+                    </Card.Text>
+                  </>
+                )}
+              </Card.Body>
+            </Card>
+        </div>
+      )}
     </div>
   );
 }
