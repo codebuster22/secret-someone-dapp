@@ -5,6 +5,7 @@ const SealSecret = ({ sealSecret }) => {
   const [receiver, setReceiver] = useState();
   const [message, setMessage] = useState();
   const [title, setTitle] = useState();
+  const [isSealing, setIsSealing] = useState(false);
 
   const handleReceiver = (event) => {
     setReceiver(event.target.value);
@@ -17,6 +18,13 @@ const SealSecret = ({ sealSecret }) => {
   const handleTitle = (event) => {
     setTitle(event.target.value);
   };
+
+  const seal = async () => {
+    setIsSealing(true);
+    await sealSecret(receiver, message, title);
+    setIsSealing(false);
+  }
+
   return (
     <div>
       <Form style={{textAlign: 'left'}}>
@@ -55,9 +63,9 @@ const SealSecret = ({ sealSecret }) => {
           <Button style={{marginLeft: 'auto', marginRight: 'auto'}}
             variant="primary"
             type="button"
-            onClick={() => sealSecret(receiver, message, title)}
+            onClick={seal}
           >
-            Seal it!
+            {isSealing?"Sealing...":"Seal it!"}
           </Button>
         </Form.Group>
       </Form>
